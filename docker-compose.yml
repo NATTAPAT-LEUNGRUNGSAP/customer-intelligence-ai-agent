@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: customer_intelligence
+      POSTGRES_USER: portfolio
+      POSTGRES_PASSWORD: portfolio
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U portfolio -d customer_intelligence"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      DATABASE_URL: postgresql+psycopg://portfolio:portfolio@db:5432/customer_intelligence
+      OLLAMA_URL: http://host.docker.internal:11434/api/chat
+      OLLAMA_MODEL: qwen2.5:7b
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
