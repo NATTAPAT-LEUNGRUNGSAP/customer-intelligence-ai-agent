@@ -39,6 +39,48 @@ The campaign layer then locks decisions in Python before asking the LLM for mess
 
 See [Model Card](docs/MODEL_CARD.md), [Acceptance Tests](docs/ACCEPTANCE_TESTS.md), and [Interview Guide](docs/INTERVIEW_GUIDE.md) for evaluation details and portfolio talking points.
 
+## Dashboard walkthrough
+
+### 1. PostgreSQL overview and data-quality audit
+
+The dashboard can read the transaction table directly from PostgreSQL. The landing view reports the active data source, retained-row percentage, selected model run, customer count, order count, revenue, average order value, and the most important cleaning outcomes.
+
+![PostgreSQL dashboard overview](docs/images/postgresql-dashboard-overview.png)
+
+The complete cleaning report keeps every removal reason auditable and counts each rejected row once according to the cleaning order.
+
+![Complete data-cleaning audit](docs/images/complete-cleaning-audit.png)
+
+### 2. Customer and segment exploration
+
+The overview compares the lifetime-spend distribution with the size of each behavioral audience.
+
+![Customer spend distribution and segment mix](docs/images/customer-distribution-and-segment-mix.png)
+
+Automatic model selection compares candidate values of `K` using separation, stability, Davies–Bouldin score, and minimum audience size rather than choosing the number of clusters manually without evidence.
+
+![Candidate cluster evaluation table](docs/images/candidate-cluster-evaluation.png)
+
+![Silhouette score by candidate K](docs/images/silhouette-by-candidate-k.png)
+
+The behavioral scatter plot makes the three discovered audiences visible across recency and monetary value.
+
+![Behavioral cluster scatter plot](docs/images/behavioral-cluster-scatter.png)
+
+The hybrid cross-tab shows how ML-discovered behavior intersects with explainable business-rule segments.
+
+![Hybrid ML and rule segment matrix](docs/images/hybrid-segment-matrix.png)
+
+Cluster profiles summarize the audience size and typical RFM behavior used to assign human-readable personas.
+
+![Behavioral cluster profiles](docs/images/cluster-profiles.png)
+
+### 3. Campaign scenario simulator
+
+The simulator estimates baseline revenue, campaign revenue, expected orders, and incremental revenue from explicit assumptions. Its output is a planning scenario—not causal evidence—and the interface directs users to validate uplift with a randomized A/B test.
+
+![Campaign what-if simulator](docs/images/campaign-simulator.png)
+
 ## What the application delivers
 
 - CSV upload, local CSV, or PostgreSQL transaction source
