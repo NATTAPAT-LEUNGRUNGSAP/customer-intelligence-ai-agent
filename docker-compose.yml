@@ -28,5 +28,16 @@ services:
       db:
         condition: service_healthy
 
+  mcp:
+    build: .
+    command: ["python", "mcp_server.py", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://portfolio:portfolio@db:5432/customer_intelligence
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   postgres_data:

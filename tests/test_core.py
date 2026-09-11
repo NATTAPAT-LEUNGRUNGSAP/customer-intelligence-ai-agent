@@ -1,5 +1,6 @@
 import pandas as pd
 import src.agent as agent_module
+import src.analyst as analyst_module
 from src.data import DataQualityReport, clean_transactions_dataframe, load_transactions, load_transactions_with_report
 from src.features import build_customer_features
 from src.campaign import simulate_campaign
@@ -9,8 +10,9 @@ from src.agent import (CampaignPlan, audit_generated_campaign, build_campaign_co
                        generate_campaign, generate_campaign_plan, grounded_facts,
                        render_campaign_plan, render_observed_facts,
                        select_target_segment, validate_campaign_plan)
-from src.products import rank_segment_products
+from src.products import rank_overall_products, rank_segment_products, summarize_product_catalog
 from src.database import DATABASE_INSERT_CHUNK_SIZE, SCHEMA_SQL
+from src.analyst import parse_analyst_intent, run_analyst_query
 
 
 def test_features_aggregate_transactions(tmp_path):
@@ -60,6 +62,20 @@ def test_dataframe_cleaner_supports_non_csv_sources():
     clean, report = clean_transactions_dataframe(raw)
     assert len(clean) == 1 and clean.iloc[0].Revenue == 20
     assert report.customers == 1
+
+
+def test_cleaner_rejects_nonfinite_numeric_values():
+    raw = pd.DataFrame([
+        {"InvoiceNo":"1", "StockCode":"A", "Quantity":1, "InvoiceDate":"2024-01-01",
+         "UnitPrice":10, "CustomerID":1, "Description":"Valid"},
+        {"InvoiceNo":"2", "StockCode":"B", "Quantity":float("inf"), "InvoiceDate":"2024-01-02",
+         "UnitPrice":20, "CustomerID":2, "Description":"Infinite quantity"},
+        {"InvoiceNo":"3", "StockCode":"C", "Quantity":1e308, "InvoiceDate":"2024-01-03",
+         "UnitPrice":1e308, "CustomerID":3, "Description":"Overflow revenue"},
+    ])
+    clean, report = clean_transactions_dataframe(raw)
+    assert len(clean) == 1
+    assert report.invalid_numeric_removed == 2
 
 
 def test_sub_cent_unit_price_survives_cleaning_and_database_precision():
@@ -150,6 +166,63 @@ def test_segment_product_ranking_uses_observed_transactions():
     distinctive = rank_segment_products(tx, subset, top_n=3, ranking="distinctive")
     assert distinctive.iloc[0].Description == "Blue Bowl"
     assert (distinctive.lift > 1).all()
+
+
+def test_overall_product_ranking_uses_requested_metric_and_excludes_fees():
+    tx = pd.DataFrame([
+        {"CustomerID":"1", "StockCode":"A", "Description":"High Revenue", "InvoiceNo":"1", "Quantity":1, "Revenue":100},
+        {"CustomerID":"2", "StockCode":"B", "Description":"Many Units", "InvoiceNo":"2", "Quantity":20, "Revenue":20},
+        {"CustomerID":"1", "StockCode":"POST", "Description":"POSTAGE", "InvoiceNo":"3", "Quantity":100, "Revenue":500},
+    ])
+    revenue = rank_overall_products(tx, top_n=10, ranking="revenue")
+    units = rank_overall_products(tx, top_n=10, ranking="units")
+    assert revenue.iloc[0].Description == "High Revenue"
+    assert units.iloc[0].Description == "Many Units"
+    assert "POSTAGE" not in set(revenue.Description)
+
+
+def test_product_catalog_summary_does_not_invent_missing_categories():
+    tx = pd.DataFrame([
+        {"CustomerID":"1", "StockCode":"A", "Description":"Red Mug", "InvoiceNo":"1", "Quantity":1, "Revenue":10},
+        {"CustomerID":"2", "StockCode":"B", "Description":"Blue Bowl", "InvoiceNo":"2", "Quantity":1, "Revenue":12},
+        {"CustomerID":"1", "StockCode":"POST", "Description":"POSTAGE", "InvoiceNo":"3", "Quantity":1, "Revenue":5},
+    ])
+    summary = summarize_product_catalog(tx)
+    assert summary["distinct_products"] == 2
+    assert summary["distinct_product_names"] == 2
+    assert summary["category_field_available"] is False
+    assert summary["distinct_categories"] is None
+
+
+def test_product_catalog_summary_uses_explicit_category_field_when_available():
+    tx = pd.DataFrame([
+        {"CustomerID":"1", "StockCode":"A", "Description":"Red Mug", "InvoiceNo":"1", "Quantity":1, "Revenue":10, "Category":"Kitchen"},
+        {"CustomerID":"2", "StockCode":"B", "Description":"Blue Bowl", "InvoiceNo":"2", "Quantity":1, "Revenue":12, "Category":"Kitchen"},
+        {"CustomerID":"3", "StockCode":"C", "Description":"Toy", "InvoiceNo":"3", "Quantity":1, "Revenue":15, "Category":"Gifts"},
+    ])
+    summary = summarize_product_catalog(tx)
+    assert summary["category_field"] == "Category"
+    assert summary["distinct_categories"] == 2
+
+
+def test_analyst_routes_top_products_with_limit_and_metric():
+    revenue, _, _ = parse_analyst_intent("10 สินค้าที่ขายดีที่สุด", provider="Rules only")
+    units, _, _ = parse_analyst_intent(
+        "5 สินค้าที่ขายได้จำนวนชิ้นมากที่สุด", provider="Rules only"
+    )
+    assert revenue.action == "top_products"
+    assert revenue.product_limit == 10 and revenue.product_ranking == "revenue"
+    assert units.action == "top_products"
+    assert units.product_limit == 5 and units.product_ranking == "units"
+
+
+def test_analyst_distinguishes_catalog_count_from_top_products():
+    count, _, _ = parse_analyst_intent("สินค้ามีกี่ประเภท", provider="Rules only")
+    total, _, _ = parse_analyst_intent("มีสินค้าทั้งหมดกี่รายการ", provider="Rules only")
+    top, _, _ = parse_analyst_intent("สินค้า 10 อันดับแรกตามรายได้", provider="Rules only")
+    assert count.action == "product_catalog_summary"
+    assert total.action == "product_catalog_summary"
+    assert top.action == "top_products"
 
 
 def test_guardrail_flags_unresolved_template_placeholders():
@@ -342,3 +415,131 @@ def test_claim_guardrail_flags_membership_and_new_stock_claims():
     assert any("Membership" in w for w in warnings)
     assert any("New products" in w for w in warnings)
     assert any("Availability" in w for w in warnings)
+
+
+def _analyst_fixture():
+    customers = pd.DataFrame([
+        {"CustomerID":"1", "cluster_persona":"Loyal High Value (C0)", "rule_segment":"Champions",
+         "recency":10, "frequency":8, "monetary":1000, "avg_order_value":125},
+        {"CustomerID":"2", "cluster_persona":"Loyal High Value (C0)", "rule_segment":"Champions",
+         "recency":20, "frequency":6, "monetary":800, "avg_order_value":133},
+        {"CustomerID":"3", "cluster_persona":"Hibernating Low Value (C1)", "rule_segment":"Hibernating",
+         "recency":120, "frequency":1, "monetary":100, "avg_order_value":100},
+        {"CustomerID":"4", "cluster_persona":"Occasional Premium (C2)", "rule_segment":"At Risk High Value",
+         "recency":100, "frequency":2, "monetary":1200, "avg_order_value":600},
+    ])
+    transactions = pd.DataFrame([
+        {"CustomerID":"1", "StockCode":"A", "Description":"RED MUG", "InvoiceNo":"1", "Quantity":1, "Revenue":20},
+        {"CustomerID":"2", "StockCode":"A", "Description":"RED MUG", "InvoiceNo":"2", "Quantity":1, "Revenue":20},
+        {"CustomerID":"3", "StockCode":"A", "Description":"RED MUG", "InvoiceNo":"3", "Quantity":1, "Revenue":20},
+        {"CustomerID":"4", "StockCode":"A", "Description":"RED MUG", "InvoiceNo":"4", "Quantity":1, "Revenue":20},
+    ])
+    diagnostics = pd.DataFrame([
+        {"k":3, "silhouette":.25, "davies_bouldin":1.2, "stability":.99,
+         "smallest_cluster_share":.20, "selection_score":.33}
+    ])
+    return customers, transactions, diagnostics
+
+
+def test_analyst_rule_intent_extracts_reactivation_filter():
+    intent, source, warnings = parse_analyst_intent(
+        "หาลูกค้ามูลค่าสูงที่ไม่ได้ซื้อมากกว่า 90 วัน", "Thai", "Rules only"
+    )
+    assert intent.action == "filter_customers"
+    assert intent.objective == "Reactivate lapsed customers"
+    assert intent.recency_days == 90 and intent.high_value
+    assert source == "Python rules" and warnings == []
+
+
+def test_analyst_rule_intent_extracts_simulation_assumptions():
+    intent, _, _ = parse_analyst_intent(
+        "ถ้ามีลูกค้า 1000 คน baseline conversion 4% เพิ่มเป็น 7% AOV 50 และส่วนลด 10%",
+        "Thai", "Rules only",
+    )
+    assert intent.action == "campaign_simulation"
+    assert intent.target_customers == 1000
+    assert intent.baseline_conversion == .04
+    assert intent.expected_conversion == .07
+    assert intent.average_order_value == 50
+    assert intent.discount_rate == .10
+
+
+def test_analyst_routes_filter_and_returns_python_evidence():
+    customers, transactions, diagnostics = _analyst_fixture()
+    result = run_analyst_query(
+        "หาลูกค้ามูลค่าสูงที่ไม่ได้ซื้อมากกว่า 90 วัน",
+        customers, transactions, 3, 3, diagnostics, "Thai", "Rules only",
+    )
+    assert result.intent.action == "filter_customers"
+    assert result.evidence["matched_customers"] == 1
+    assert result.table.CustomerID.tolist() == ["4"]
+    assert "Validated customer filter" in result.tool_trace
+
+
+def test_analyst_routes_simulator_without_llm_arithmetic():
+    customers, transactions, diagnostics = _analyst_fixture()
+    result = run_analyst_query(
+        "ถ้ามีลูกค้า 1000 คน baseline conversion 4% เพิ่มเป็น 7% AOV 50 และส่วนลด 10%",
+        customers, transactions, 3, 3, diagnostics, "Thai", "Rules only",
+    )
+    assert result.evidence["scenario_results"]["incremental_revenue"] == 1150
+    assert result.tool_trace[-2] == "Deterministic campaign simulator"
+
+
+def test_analyst_rejects_invalid_llm_intent_and_falls_back_to_rules():
+    original = analyst_module._call_copy_model
+    analyst_module._call_copy_model = lambda *args, **kwargs: '{"action":"delete_database"}'
+    try:
+        intent, source, warnings = parse_analyst_intent(
+            "เปรียบเทียบแต่ละ segment", "Thai", "Ollama", "test-model"
+        )
+    finally:
+        analyst_module._call_copy_model = original
+    assert intent.action == "compare_segments"
+    assert source == "Python rules fallback"
+    assert warnings and "rejected" in warnings[0]
+
+
+def test_analyst_semantic_guardrail_keeps_explicit_campaign_action():
+    original = analyst_module._call_copy_model
+    analyst_module._call_copy_model = lambda *args, **kwargs: (
+        '{"action":"churn_prediction","objective":"Reactivate lapsed customers",'
+        '"recency_days":null,"high_value":false,"segment":null,"target_customers":null,'
+        '"baseline_conversion":null,"expected_conversion":null,"average_order_value":null,'
+        '"discount_rate":null,"probability_threshold":null,"forecast_weeks":null,'
+        '"product_limit":null,"product_ranking":null}'
+    )
+    try:
+        intent, source, warnings = parse_analyst_intent(
+            "แนะนำกลุ่มเป้าหมายสำหรับแคมเปญดึงลูกค้ากลับมา",
+            "Thai", "Ollama", "test-model",
+        )
+    finally:
+        analyst_module._call_copy_model = original
+    assert intent.action == "campaign_recommendation"
+    assert source == "Python semantic guardrail"
+    assert warnings and "explicit request" in warnings[0]
+
+
+def test_analyst_rejects_numeric_llm_narrative_and_uses_safe_interpretation():
+    customers, transactions, diagnostics = _analyst_fixture()
+    outputs = iter([
+        '{"action":"segment_overview","objective":"Retain valuable customers",'
+        '"recency_days":null,"high_value":false,"segment":null,"target_customers":null,'
+        '"baseline_conversion":null,"expected_conversion":null,"average_order_value":null,'
+        '"discount_rate":null}',
+        '{"headline":"พบ 3 กลุ่ม","interpretation":"ยอดเพิ่ม 20%",'
+        '"next_step":"ส่งทันที"}',
+    ])
+    original = analyst_module._call_copy_model
+    analyst_module._call_copy_model = lambda *args, **kwargs: next(outputs)
+    try:
+        result = run_analyst_query(
+            "สรุปกลุ่มลูกค้า", customers, transactions, 3, 3, diagnostics,
+            "Thai", "Ollama", "test-model",
+        )
+    finally:
+        analyst_module._call_copy_model = original
+    assert result.intent_source == "Ollama structured intent"
+    assert result.narrative_source == "Python interpretation fallback"
+    assert any("protected evidence display" in warning for warning in result.warnings)

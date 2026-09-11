@@ -1,5 +1,6 @@
 from dataclasses import dataclass, asdict, fields
 from pathlib import Path
+import numpy as np
 import pandas as pd
 
 REQUIRED = {"InvoiceNo", "StockCode", "Quantity", "InvoiceDate", "UnitPrice", "CustomerID"}
@@ -51,7 +52,7 @@ def clean_transactions_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, DataQu
     df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"], format="mixed", errors="coerce")
     for col in ["Quantity", "UnitPrice", "CustomerID"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
-    missing_customer_mask = df["CustomerID"].isna()
+    missing_customer_mask = df["CustomerID"].isna() | ~np.isfinite(df["CustomerID"])
     missing_customer = int(missing_customer_mask.sum())
     df = df.loc[~missing_customer_mask].copy()
     invalid_date_mask = df["InvoiceDate"].isna()
@@ -60,7 +61,14 @@ def clean_transactions_dataframe(df: pd.DataFrame) -> tuple[pd.DataFrame, DataQu
     missing_key_mask = df[["InvoiceNo", "StockCode"]].isna().any(axis=1)
     missing_key = int(missing_key_mask.sum())
     df = df.loc[~missing_key_mask].copy()
-    invalid_numeric_mask = df[["Quantity", "UnitPrice"]].isna().any(axis=1)
+    numeric = df[["Quantity", "UnitPrice"]]
+    with np.errstate(over="ignore", invalid="ignore"):
+        candidate_revenue = df["Quantity"] * df["UnitPrice"]
+    invalid_numeric_mask = (
+        numeric.isna().any(axis=1)
+        | ~np.isfinite(numeric).all(axis=1)
+        | ~np.isfinite(candidate_revenue)
+    )
     invalid_numeric = int(invalid_numeric_mask.sum())
     df = df.loc[~invalid_numeric_mask].copy()
     invalid_required = missing_customer + invalid_date + missing_key + invalid_numeric

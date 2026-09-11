@@ -1,6 +1,6 @@
 # Customer Intelligence AI Agent
 
-An auditable customer-intelligence portfolio project that converts raw retail transactions into customer segments, product evidence, and guarded campaign briefs.
+An auditable customer-intelligence portfolio project that converts raw retail transactions into customer segments, product evidence, predictive scores, revenue forecasts, and guarded campaign briefs.
 
 The system deliberately separates responsibilities: Python and SQL calculate facts, machine learning discovers behavior, business rules preserve explainability, and the LLM writes copy that must pass deterministic guardrails.
 
@@ -8,7 +8,7 @@ The system deliberately separates responsibilities: Python and SQL calculate fac
 
 Marketing teams need to answer four connected questions: which customers behave similarly, which audience fits a business objective, which observed product can support the campaign, and how to create copy without allowing an LLM to invent customer facts. This application makes every numerical decision reproducible and keeps generated language inside a narrow, validated boundary.
 
-**Stack:** Python · pandas · scikit-learn · PostgreSQL · SQLAlchemy · Streamlit · Plotly · Ollama/OpenAI · Docker · GitHub Actions
+**Stack:** Python · pandas · scikit-learn · PostgreSQL · SQLAlchemy · Streamlit · Plotly · MCP · Ollama/OpenAI · Docker · GitHub Actions
 
 ## Demonstrated result
 
@@ -85,10 +85,25 @@ The simulator estimates baseline revenue, campaign revenue, expected orders, and
 
 - CSV upload, local CSV, or PostgreSQL transaction source
 - Persistent import audit with original/clean row counts plus duplicate, missing, cancellation, and invalid-value counts
+- Non-finite and overflow numeric rejection before values reach scikit-learn
 - Customer-level RFM and behavioral feature engineering
 - Hybrid segmentation: explainable lifecycle rules plus K-Means clustering
 - Automatic K selection using silhouette, stability, Davies–Bouldin, and minimum audience size
 - Segment profiles, cluster visualizations, and manual K comparison
+- Grounded AI Analyst for Thai/English questions with validated structured intent
+- Semantic guardrail that prevents an LLM from rerouting an explicit request to an unrelated tool
+- Leakage-aware churn-risk prediction for no purchase in the next 90 days
+- Repeat-purchase prediction for purchase in the next 30 days
+- Weekly revenue forecasting for 1–12 weeks with temporal selection across Ridge, last-week, and four-week-mean methods
+- Forecast reliability gate that hides aggregate totals when normalized validation error is high
+- Temporal holdout metrics and global model-driver explanations
+- A real read-only MCP server with discoverable tools and structured results
+- Canonical JSON Schemas adapted to MCP and OpenAI strict function tools
+- Segment-product questions such as `กลุ่ม loyalty มีสินค้าอะไรบ้าง`
+- Product catalog counts that distinguish products from unavailable category taxonomy
+- Overall top-product questions with explicit revenue, units, orders, or customer ranking
+- Auditable tool routing across segment overview, comparison, customer filters, campaign recommendation, and simulation
+- Optional LLM business interpretation with protected numerical evidence rendered by Python
 - Popular products and distinctive products with segment lift greater than 1
 - Deterministic campaign targeting for retention, reactivation, and average-order-value objectives
 - Rules-only, OpenAI, and local Ollama message generation
@@ -106,8 +121,15 @@ flowchart TD
     B --> C[Customer feature engineering]
     C --> D[Business-rule segments]
     C --> E[K-Means clusters]
+    B --> P[Predictive models]
     D --> F[Auditable customer profile]
     E --> F
+    Q[Natural-language question] --> R[Validated intent and tool router]
+    M[MCP client or Inspector] --> N[Customer Intelligence MCP server]
+    N --> C
+    N --> G
+    R --> F
+    R --> P
     F --> G[Target and product evidence]
     G --> H[Python locks CampaignPlan]
     H --> I[LLM writes message-only JSON]
@@ -125,12 +147,18 @@ flowchart TD
 | `src/database.py` | PostgreSQL read/write adapter |
 | `src/features.py` | RFM and behavioral features |
 | `src/segmentation.py` | Rules, clustering, model selection, and personas |
-| `src/products.py` | Popular and distinctive product evidence |
+| `src/predictive.py` | Temporal churn/repeat models and weekly revenue forecast |
+| `src/products.py` | Overall and segment-level product rankings from observed transactions |
+| `src/analyst.py` | Structured intent, approved tool routing, evidence, and validated interpretation |
 | `src/agent.py` | Targeting, LLM generation, guardrails, and safe fallback |
+| `src/contracts.py` | Canonical strict JSON Schemas and MCP/OpenAI adapters |
+| `src/business_tools.py` | Read-only analytics shared by MCP and application adapters |
+| `mcp_server.py` | Discoverable MCP tools over stdio or Streamable HTTP |
 | `src/campaign.py` | Rule-based strategy and campaign simulator |
 | `scripts/load_csv_to_postgres.py` | Validated CSV-to-PostgreSQL loader |
 | `sql/schema.sql` | Database schema and indexes |
 | `tests/test_core.py` | Core data, ML, product, and agent tests |
+| `tests/test_predictive.py` | Leakage, predictive routing, contracts, and model tests |
 | `docs/MODEL_CARD.md` | Model assumptions, evaluation, limitations, and appropriate use |
 | `docs/ACCEPTANCE_TESTS.md` | Evidence-backed release checklist |
 | `docs/INTERVIEW_GUIDE.md` | Short project pitch and likely technical questions |
@@ -212,13 +240,72 @@ docker compose up --build
 
 The dashboard will be available at `http://localhost:8501`. It starts with Demo CSV data; load PostgreSQL separately when you want to demonstrate the database path.
 
+The MCP endpoint is available locally at `http://localhost:8000/mcp`. It is intentionally unauthenticated for local portfolio demonstration only; add HTTPS authentication before any public deployment.
+
+## Demonstrate the MCP server
+
+Install the dependencies, then launch the official MCP Inspector from PowerShell:
+
+```powershell
+.\.venv\Scripts\mcp.exe dev mcp_server.py
+```
+
+Open the URL printed by the command, choose **Tools**, and call `get_segment_products` with:
+
+```json
+{
+  "segment": "loyalty",
+  "limit": 5,
+  "ranking": "popular"
+}
+```
+
+To run a local Streamable HTTP endpoint instead:
+
+```powershell
+.\.venv\Scripts\python.exe mcp_server.py --transport streamable-http
+```
+
+To show that MCP and OpenAI are generated from the same canonical input contract:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\show_api_contracts.py get_segment_products
+```
+
+Replace the tool name with `predict_churn`, `predict_repeat_purchase`,
+`forecast_revenue`, or `explain_predictive_model` to inspect a predictive
+contract. The first predictive request trains and caches the models in the
+running process; production deployment should train, version, and promote model
+artifacts offline.
+
+See [MCP Demonstration Guide](docs/MCP_GUIDE.md) for the presentation flow, schemas, security boundary, and remote OpenAI connection example.
+
 ## Run tests
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The repository currently contains 25 core and adversarial tests. GitHub Actions runs the same test suite on every push and pull request.
+The repository currently contains core, adversarial, schema, and in-memory MCP integration tests. GitHub Actions runs the same test suite on every push and pull request.
+
+## AI Analyst examples
+
+Open the `AI Analyst` tab and ask in Thai or English, for example:
+
+```text
+หาลูกค้าที่มีมูลค่าสูงและไม่ได้ซื้อมากกว่า 90 วัน
+สินค้ามีกี่ประเภท
+10 สินค้าที่ขายดีที่สุด
+10 สินค้าที่ขายได้จำนวนชิ้นมากที่สุด
+เปรียบเทียบแต่ละ behavioral segment ให้หน่อย
+แนะนำกลุ่มเป้าหมายสำหรับแคมเปญดึงลูกค้ากลับมา
+ทำนายลูกค้าที่เสี่ยง churn มากกว่า 60%
+กลุ่ม loyalty มีโอกาสซื้อซ้ำภายใน 30 วันเท่าไร
+พยากรณ์รายได้ 4 สัปดาห์ข้างหน้า
+ถ้ามีลูกค้า 1000 คน baseline conversion 4% เพิ่มเป็น 7% AOV 50 และส่วนลด 10% จะเป็นอย่างไร
+```
+
+With OpenAI or Ollama selected, the LLM returns a schema-constrained intent and a qualitative business interpretation. Python validates the intent, runs only an allow-listed analytical function or predictive model, calculates every metric, and exposes an evidence block plus tool trace. The LLM does not calculate risk probabilities or forecasts. Invalid model output falls back to deterministic intent rules or a safe Python interpretation. The analyst never executes model-written SQL and never writes to the database.
 
 ## Why hybrid segmentation?
 
@@ -245,3 +332,4 @@ Each message is checked for placeholders and unsupported individual purchase, pr
 3. Track campaign delivery and outcome events.
 4. Evaluate incremental uplift with randomized holdouts.
 5. Add RAG only for approved unstructured marketing knowledge.
+6. Persist, calibrate, monitor, and version predictive-model artifacts.

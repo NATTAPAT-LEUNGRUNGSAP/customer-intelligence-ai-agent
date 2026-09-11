@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from src.campaign import recommend_campaign
+from src.contracts import campaign_copy_schema
 from src.products import product_records, rank_segment_products
 
 OBJECTIVES = {
@@ -93,6 +94,11 @@ class CampaignGenerationResult:
 
 
 def _minmax(series: pd.Series) -> pd.Series:
+    series = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    if series.notna().any():
+        series = series.fillna(series.median())
+    else:
+        return pd.Series(0.5, index=series.index)
     width = series.max() - series.min()
     return (series - series.min()) / width if width else pd.Series(0.5, index=series.index)
 
@@ -250,20 +256,7 @@ def build_campaign_constraints(question: str, objective: str, language: str,
 
 
 def _copy_schema(constraints: CampaignConstraints) -> dict:
-    properties = {channel: {"type": "string"} for channel in constraints.channels}
-    return {
-        "type": "object",
-        "properties": {
-            "messages": {
-                "type": "object",
-                "properties": properties,
-                "required": list(constraints.channels),
-                "additionalProperties": False,
-            }
-        },
-        "required": ["messages"],
-        "additionalProperties": False,
-    }
+    return campaign_copy_schema(constraints.channels)
 
 
 def _prompt(question: str, constraints: CampaignConstraints,
@@ -405,7 +398,16 @@ def _call_copy_model(prompt: str, provider: str, model: str | None,
         except ImportError as exc:
             raise RuntimeError("Install dependencies from requirements.txt to use OpenAI.") from exc
         response = OpenAI().responses.create(
-            model=model or os.getenv("OPENAI_MODEL", "gpt-4o-mini"), input=prompt
+            model=model or os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            input=prompt,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "validated_customer_intelligence_output",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
         )
         return response.output_text
     if provider == "Ollama":

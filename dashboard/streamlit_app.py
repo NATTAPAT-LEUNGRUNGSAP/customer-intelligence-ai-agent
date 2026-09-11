@@ -16,6 +16,7 @@ from src.campaign import simulate_campaign
 from src.agent import (OBJECTIVES, build_campaign_constraints, generate_campaign_plan,
                        grounded_facts, render_campaign_plan, render_observed_facts,
                        select_target_segment)
+from src.analyst import intent_as_dict, run_analyst_query
 
 try:
     from dotenv import load_dotenv
@@ -107,7 +108,9 @@ st.caption(
     f"Model run: **K={result.selected_k}**"
 )
 
-overview, explorer, agent, simulator = st.tabs(["Overview", "Segmentation", "Campaign Agent", "Simulator"])
+overview, explorer, analyst, agent, simulator = st.tabs(
+    ["Overview", "Segmentation", "AI Analyst", "Campaign Agent", "Simulator"]
+)
 with overview:
     a, b, c, d = st.columns(4)
     a.metric("Customers", f"{features.CustomerID.nunique():,}")
@@ -160,6 +163,141 @@ with explorer:
                                         "monetary":"£{:,.0f}", "avg_order_value":"£{:,.0f}"}),
                  use_container_width=True)
     st.caption("Choose Auto or another K in the sidebar. Prefer a solution that is statistically stable and creates distinct, actionable audiences.")
+with analyst:
+    st.subheader("Grounded AI Analyst")
+    st.caption(
+        "Ask in Thai or English. The model may classify intent and explain results, "
+        "but Python selects and runs every analytical tool. Raw SQL and database writes are disabled."
+    )
+    st.caption("Revenue forecasts are weekly, default to 4 weeks, and are capped at 12 weeks for this dataset.")
+    examples = [
+        "สินค้ามีกี่ประเภท",
+        "กลุ่ม loyalty มีสินค้าอะไรบ้าง",
+        "10 สินค้าที่ขายดีที่สุด",
+        "10 สินค้าที่ขายได้จำนวนชิ้นมากที่สุด",
+        "ลูกค้ากลุ่มไหนมีความเสี่ยง churn มากกว่า 60%",
+        "กลุ่ม loyalty มีโอกาสซื้อซ้ำภายใน 30 วันเท่าไร",
+        "พยากรณ์รายได้ 4 สัปดาห์ข้างหน้า",
+        "หาลูกค้าที่มีมูลค่าสูงและไม่ได้ซื้อมากกว่า 90 วัน",
+        "เปรียบเทียบแต่ละ behavioral segment ให้หน่อย",
+        "แนะนำกลุ่มเป้าหมายสำหรับแคมเปญดึงลูกค้ากลับมา",
+        "ถ้ามีลูกค้า 1000 คน baseline conversion 4% เพิ่มเป็น 7% AOV 50 และส่วนลด 10% จะเป็นอย่างไร",
+    ]
+    example = st.selectbox("Example question", examples)
+    analyst_question = st.text_area("Ask the customer data", value=example, key="analyst_question")
+    ac1, ac2, ac3 = st.columns(3)
+    analyst_provider = ac1.selectbox(
+        "Analyst provider", ["Rules only", "OpenAI", "Ollama"], key="analyst_provider"
+    )
+    analyst_language = ac2.selectbox(
+        "Analyst language", ["Thai", "English"], key="analyst_language"
+    )
+    analyst_default_model = "gpt-4o-mini" if analyst_provider == "OpenAI" else "qwen2.5:7b"
+    analyst_model = ac3.text_input(
+        "Analyst model", value=analyst_default_model,
+        disabled=analyst_provider == "Rules only", key="analyst_model"
+    )
+    if st.button("Analyze question", type="primary"):
+        # Never leave a previous answer visible under a failed new request.
+        st.session_state.pop("analyst_result", None)
+        st.session_state["analyst_submitted_question"] = analyst_question
+        try:
+            with st.spinner("Parsing intent and running approved analytical tools..."):
+                st.session_state["analyst_result"] = run_analyst_query(
+                    analyst_question, result.customers, tx,
+                    result.selected_k, result.automatic_k, result.diagnostics,
+                    analyst_language, analyst_provider, analyst_model,
+                )
+        except Exception as exc:
+            st.error(str(exc))
+
+    analysis_result = st.session_state.get("analyst_result")
+    if analysis_result is not None:
+        with st.chat_message("user"):
+            st.write(st.session_state.get("analyst_submitted_question", analyst_question))
+        with st.chat_message("assistant"):
+            st.markdown(analysis_result.answer)
+            evidence = analysis_result.evidence
+            action = analysis_result.intent.action
+            if action == "filter_customers":
+                e1, e2, e3 = st.columns(3)
+                e1.metric("Matched customers", f"{evidence['matched_customers']:,}")
+                e2.metric("Audience share", f"{evidence['customer_share']:.1%}")
+                e3.metric("Observed customer value", f"£{evidence['observed_customer_value_gbp']:,.0f}")
+            elif action == "campaign_simulation":
+                simulated = evidence["scenario_results"]
+                e1, e2, e3, e4 = st.columns(4)
+                e1.metric("Baseline revenue", f"£{simulated['baseline_revenue']:,.0f}")
+                e2.metric("Campaign revenue", f"£{simulated['campaign_revenue_after_discount']:,.0f}")
+                e3.metric("Expected orders", f"{simulated['expected_orders']:,.0f}")
+                e4.metric("Incremental revenue", f"£{simulated['incremental_revenue']:,.0f}")
+                st.warning(evidence["causal_warning"])
+            elif action == "campaign_recommendation":
+                st.metric("Recommended segment", evidence["recommended_segment"])
+            elif action == "segment_products":
+                st.metric("Resolved segment", evidence["resolved_segment"])
+            elif action == "top_products":
+                e1, e2 = st.columns(2)
+                e1.metric("Products returned", len(evidence["products"]))
+                e2.metric("Ranking metric", evidence["ranking"])
+            elif action == "product_catalog_summary":
+                e1, e2, e3 = st.columns(3)
+                e1.metric("Distinct products", f"{evidence['distinct_products']:,}")
+                e2.metric("Distinct product names", f"{evidence['distinct_product_names']:,}")
+                e3.metric(
+                    "Distinct categories",
+                    f"{evidence['distinct_categories']:,}"
+                    if evidence["distinct_categories"] is not None else "Unavailable",
+                )
+                if not evidence["category_field_available"]:
+                    st.info(evidence["category_note"])
+            elif action in {"churn_prediction", "repeat_purchase_prediction"}:
+                e1, e2, e3, e4 = st.columns(4)
+                e1.metric("Scored customers", f"{evidence['scored_customers']:,}")
+                e2.metric("Above threshold", f"{evidence['flagged_customers']:,}")
+                e3.metric("Flagged share", f"{evidence['flagged_share']:.1%}")
+                e4.metric("Validation ROC-AUC", f"{evidence['validation']['roc_auc']:.3f}")
+                st.warning(evidence["warning"])
+            elif action == "revenue_forecast":
+                total_forecast = sum(point["predicted_revenue_gbp"] for point in evidence["forecast"])
+                reliability = evidence["validation"]["reliability"]
+                selected_method = evidence["validation"]["selected_method"]
+                e1, e2, e3, e4 = st.columns(4)
+                e1.metric("Forecast weeks", evidence["forecast_weeks"])
+                e2.metric(
+                    "Forecast revenue",
+                    f"£{total_forecast:,.0f}" if reliability != "low" else "Hidden · low reliability",
+                )
+                e3.metric("Selected method", selected_method)
+                e4.metric("Reliability", reliability.title())
+                st.caption(
+                    f"Selected MAE £{evidence['validation']['mae']:,.0f} · "
+                    f"Ridge £{evidence['validation']['ridge_mae']:,.0f} · "
+                    f"Last week £{evidence['validation']['baseline_mae']:,.0f} · "
+                    f"4-week mean £{evidence['validation']['rolling_mean_4_mae']:,.0f}"
+                )
+                st.warning(evidence["warning"])
+            else:
+                e1, e2 = st.columns(2)
+                e1.metric("Selected K", evidence["selected_k"])
+                e2.metric("Silhouette", f"{evidence['selected_k_silhouette']:.3f}")
+
+            if not analysis_result.table.empty:
+                st.dataframe(analysis_result.table, use_container_width=True)
+            with st.expander("View structured intent, evidence, and tool trace"):
+                st.write("**Validated intent**")
+                st.json(intent_as_dict(analysis_result.intent))
+                st.write("**Tool trace**")
+                for index, tool in enumerate(analysis_result.tool_trace, start=1):
+                    st.write(f"{index}. {tool}")
+                st.write("**Python-calculated evidence**")
+                st.json(analysis_result.evidence)
+                st.caption(
+                    f"Intent: {analysis_result.intent_source} · "
+                    f"Interpretation: {analysis_result.narrative_source}"
+                )
+            if analysis_result.warnings:
+                st.info(" · ".join(analysis_result.warnings))
 with agent:
     st.subheader("Grounded Campaign Agent")
     objective = st.selectbox("Business objective", list(OBJECTIVES))
