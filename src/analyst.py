@@ -10,6 +10,7 @@ import pandas as pd
 from src.agent import OBJECTIVES, _call_copy_model, grounded_facts, select_target_segment
 from src.campaign import simulate_campaign
 from src.contracts import analyst_intent_schema, narrative_schema
+from src.narrative_evidence import evidence_references, render_evidence_text
 from src.products import (
     overall_product_records, product_records, rank_overall_products,
     rank_segment_products, summarize_product_catalog,
@@ -554,11 +555,17 @@ def _analyst_narrative(intent: AnalystIntent, evidence: dict, provider: str,
     fallback = _fallback_narrative(intent)
     if provider == "Rules only":
         return fallback, "Python interpretation", []
-    prompt = f"""Write a short business interpretation in {intent.language} using the supplied evidence.
-Return JSON with exactly headline, interpretation, and next_step. Do not include digits, currency symbols,
-percentages, customer identifiers, invented causes, guaranteed outcomes, or facts absent from the evidence.
-The application displays every number separately using Python. Treat clustering as an approximation and
-simulation as non-causal. Evidence: {json.dumps(evidence, ensure_ascii=False, default=str)}
+    references = evidence_references(evidence)
+    prompt = f"""Write a short business interpretation in {intent.language} using supplied evidence.
+Return JSON with exactly headline, interpretation, and next_step (non-empty strings).
+For any number or a name containing digits, use an exact reference such as {{{{fact:f0}}}}.
+The application replaces references with their field path and original value. Do not write numbers,
+currency symbols or percentages yourself. Select only relevant references, at most six.
+Do not invent causes, guarantees, customer identifiers, or facts. Do not spell out numeric claims in words.
+Keep each reference tied to its own record and metric; do not relabel a count as revenue or a
+forecast as an observed outcome. Clustering is approximate; simulations are not causal evidence.
+Evidence: {json.dumps(evidence, ensure_ascii=False, default=str)}
+Available references: {json.dumps(references, ensure_ascii=False, default=str)}
 Return JSON only."""
     try:
         payload = _json_object(_call_copy_model(prompt, provider, model, _narrative_schema()))
@@ -567,20 +574,13 @@ Return JSON only."""
         if not all(isinstance(payload[key], str) and payload[key].strip() for key in payload):
             raise ValueError("Narrative fields must be non-empty text.")
         combined = " ".join(payload.values())
-        if re.search(r"\d|[%£$€]", combined):
-            raise ValueError("Narrative repeated a protected numeric claim.")
         if re.search(r"guarantee|แน่นอน|รับประกัน|จะเพิ่ม", combined, flags=re.IGNORECASE):
             raise ValueError("Narrative made a guaranteed-outcome claim.")
+        payload = {key: render_evidence_text(value, references) for key, value in payload.items()}
         answer = f"### {payload['headline']}\n\n{payload['interpretation']}\n\n**Next step:** {payload['next_step']}"
         return answer, f"{provider} validated interpretation", []
     except Exception as exc:
-        if "protected numeric claim" in str(exc):
-            warning = (
-                "AI explanation was replaced by the safe Python explanation because "
-                "it introduced numeric text outside the protected evidence display."
-            )
-        else:
-            warning = f"AI explanation was replaced by the safe Python explanation: {exc}"
+        warning = f"AI explanation was replaced by the safe Python explanation: {exc}"
         return fallback, "Python interpretation fallback", [warning]
 
 

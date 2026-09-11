@@ -542,4 +542,4 @@ def test_analyst_rejects_numeric_llm_narrative_and_uses_safe_interpretation():
         analyst_module._call_copy_model = original
     assert result.intent_source == "Ollama structured intent"
     assert result.narrative_source == "Python interpretation fallback"
-    assert any("protected evidence display" in warning for warning in result.warnings)
+    assert any("unsupported numeric text" in warning for warning in result.warnings)
