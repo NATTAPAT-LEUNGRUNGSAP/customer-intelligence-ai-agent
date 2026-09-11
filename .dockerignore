@@ -3,5 +3,13 @@ __pycache__
 .pytest_cache
 .git
 .env
+.env.*
+**/.env.*
+**/secrets.toml
 *.zip
 data/online_retail.csv
+**/.venv
+**/__pycache__
+**/.env
+customer-intelligence-agent/
+*.exe

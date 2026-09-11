@@ -1,5 +1,13 @@
 # Customer Intelligence AI Agent
 
+Hosted demo with local Ollama: [setup guide](docs/LOCAL_LLM_WEB.md).
+Includes an authenticated, limited gateway for scheduled demonstrations; PC uptime
+and a running HTTPS tunnel are required. Public LLM access is not enabled by default.
+
+Team Docker setup: see [TEAM_SETUP.md](docs/TEAM_SETUP.md). Use
+`docker compose -f compose.team.yml up --build -d` for an isolated demo database
+with automatic first-run seeding, Streamlit, and MCP. Local Ollama is optional.
+
 An auditable customer-intelligence portfolio project that converts raw retail transactions into customer segments, product evidence, predictive scores, revenue forecasts, and guarded campaign briefs.
 
 The system deliberately separates responsibilities: Python and SQL calculate facts, machine learning discovers behavior, business rules preserve explainability, and the LLM writes copy that must pass deterministic guardrails.

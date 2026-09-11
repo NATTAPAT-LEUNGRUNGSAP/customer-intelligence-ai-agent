@@ -606,14 +606,14 @@ def run_analyst_query(question: str, customers: pd.DataFrame, transactions: pd.D
     answer, narrative_source, narrative_warnings = _analyst_narrative(
         intent, evidence, provider, model
     )
-    parser_tool = "LLM structured intent parser" if provider != "Rules only" else "Python intent parser"
+    parser_tool = f"Intent parser: {intent_source}"
     return AnalystResult(
         intent=intent,
         intent_source=intent_source,
         narrative_source=narrative_source,
         answer=answer,
         evidence=evidence,
-        tool_trace=[parser_tool, *trace, "Validated business interpretation"],
+        tool_trace=[parser_tool, *trace, f"Interpretation: {narrative_source}"],
         table=table,
         warnings=[*warnings, *narrative_warnings],
     )

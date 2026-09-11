@@ -421,12 +421,8 @@ def _call_copy_model(prompt: str, provider: str, model: str | None,
             "options": {"temperature": 0.1},
             "stream": False,
         }).encode()
-        endpoint = os.getenv("OLLAMA_URL", "http://localhost:11434/api/chat")
-        try:
-            with request.urlopen(request.Request(endpoint, data=payload, headers={"Content-Type": "application/json"}), timeout=120) as res:
-                return json.loads(res.read())["message"]["content"]
-        except Exception as exc:
-            raise RuntimeError("Could not reach Ollama. Confirm Ollama is running and the model is installed.") from exc
+        from src.ollama_transport import chat
+        return chat(payload)
     raise ValueError(f"Unknown provider: {provider}")
 
 

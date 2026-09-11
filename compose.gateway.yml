@@ -1,0 +1,10 @@
+name: customer-intelligence-gateway
+services:
+  gateway:
+    build: .
+    command: ["python", "ollama_gateway.py"]
+    env_file: .env.gateway
+    ports:
+      - "127.0.0.1:8787:8787"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
